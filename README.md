@@ -57,7 +57,7 @@ GET https://api.xueqiu.com/v4/statuses/user_timeline.json
 
 python3 xq_push.py --import-raw data/seed_timeline.json --online
                                                # 从原始抓取快照重建归档（联网补长文全文）
-python3 export_ima.py                          # 生成可导入 ima 的 Markdown 快照
+python3 export_ima.py                          # 生成当天日期命名的纯内容快照 YYYY-MM-DD.md
 python3 export_ima.py --sync-status            # 定时同步用：无变化输出 {"action":"none"}
 ```
 
@@ -111,8 +111,8 @@ gh workflow run xq.yml -R dzp181/xq-dadao
 | `archive/by-month/YYYY-MM.md` | 按月的人可读版本 |
 | `data/history_index.json` | 709 条历史发言索引精简版（来自 ai-berkshire 公开归档，只有摘要与链接） |
 | `data/seed_timeline.json` | 一次原始 `user_timeline.json` 抓取的精简快照，用于可复现地重建归档 |
-| `ima_export/段永平雪球动态.md` | **实时全量快照**，固定文件名，`export_ima.py` 生成，不入库 |
-| `ima_export/段永平雪球发言历史索引.md` | 历史索引快照，一次入库即可 |
+| `ima_export/YYYY-MM-DD.md` | **纯内容快照**，按同步当天日期命名，`export_ima.py` 生成，不入库 |
+| `ima_export/.sync.json` / `.pending.json` | 同步指纹与待提交状态（本地状态文件，不入库） |
 
 归档与推送是解耦的：`xq_push.py` 抓到时间线后先写归档，再走推送逻辑。
 所以即使某条推送失败、或超过 `max_per_run` 没推，正文仍完整留存。
@@ -121,20 +121,30 @@ CI 的 `Persist state and archive` 步骤把 `state.json` 与 `archive/` 一起�
 所以每 30 分钟的新内容会自动沉淀在私有仓库里。
 
 **ima 存放位置**：知识库「美股投研小白知识库」→ 文件夹「网红人物帖推送」→「段永平」。
-2026-11-13 已导入两份文档并验证正文可读：实时动态全文（20 条）与历史索引（709 条）。
+
+2026-11-13 起改成「纯内容 + 按日期分文件」：
+
+- 文档里只有段永平本人的发言：时间、类型、标题、正文、回复对话链。
+  不含《关于这份资料》这类说明，也不放账号、订阅地址、采集方式、边界、
+  原帖链接 / 来源 / 互动数等元信息。
+- 文件名用同步当天日期 `YYYY-MM-DD.md`。有新内容时生成当天文件并入库；
+  跨天自动新建，历史日期文件不再改动；同一天内再有新内容用同名替换更新当天文件，不叠加条目。
+- 内容没有变化就不上传，不会在文件夹里堆重复快照。
+
+ima 接口不支持删除 / 重命名 / 移动。2026-11-13 已把旧的《段永平雪球动态.md》
+用纯内容版覆盖一次（说明已清除），之后永久不再更新；若不需要可在 ima App 里手动删除。
+《段永平雪球发言历史索引.md》（709 条静态索引）也已入库，同样不再上传。
 
 **为什么不是 CI 直接写 ima**：ima 只能通过 WorkBuddy 的 ima 连接器访问，
 GitHub Actions 里跑的 Python 脚本拿不到这个凭证，也不该把个人知识库令牌放进 CI。
-所以链路是「CI 沉淀 `archive/` → 本机 `python3 export_ima.py` → 在 WorkBuddy 会话里说一句
-『把段永平数据同步到 ima』完成上传」。增量更新用**同名替换**：`段永平雪球动态.md`
-文件名固定，重新生成后覆盖同名条目即可，不会在文件夹里越堆越多；
-历史索引是静态的，只在归档来源变更时才需要重传。
+所以链路是「CI 沉淀 `archive/` → 本机 `python3 export_ima.py --sync-status` →
+WorkBuddy 会话里上传」。也可以在会话里直接说「把段永平数据同步到 ima」手动触发一次。
 
 已建 WorkBuddy 自动化「段永平雪球动态同步到 ima」，每 4 小时跑一次：
 `git pull` → `export_ima.py --sync-status` → 有变化才走
 `create_media` / PUT / `add_knowledge(REPLACE)` → `--commit` 记指纹。
-没有新内容时静默跳过，不重复入库；`ima_export/.sync.json` 记录上次同步的指纹。
-也可以在会话里直接说「把段永平数据同步到 ima」手动触发一次。
+没有新内容时静默跳过，不重复入库；`ima_export/.sync.json` 记录上次同步的内容指纹。
+`--legacy-clean` 只在需要一次性覆盖旧条目时使用，`--history` 用于按需重建静态索引。
 
 ## 边界与风险
 
