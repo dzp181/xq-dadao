@@ -1,0 +1,14 @@
+{
+  "uid": "1247347556",
+  "name": "段永平",
+  "profile_name": "大道无形我有型",
+  "profile_url": "https://xueqiu.com/1247347556",
+  "ntfy_url": "http://112.74.95.74:8858",
+  "ntfy_topic": "x-dadao",
+  "subscribe_url": "http://112.74.95.74:8858/x-dadao",
+  "timeline_pages": 1,
+  "max_per_run": 3,
+  "max_age_hours": 18,
+  "attach_image": false,
+  "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}

@@ -1,0 +1,7 @@
+local.env
+__pycache__/
+*.log
+.DS_Store
+# 本机全局 gitignore 会忽略 README.md，这里显式放行
+!README.md
+# state.json 要交给 CI 持久化，故不忽略（只含公开帖 id，无敏感信息）
