@@ -58,6 +58,7 @@ GET https://api.xueqiu.com/v4/statuses/user_timeline.json
 python3 xq_push.py --import-raw data/seed_timeline.json --online
                                                # 从原始抓取快照重建归档（联网补长文全文）
 python3 export_ima.py                          # 生成可导入 ima 的 Markdown 快照
+python3 export_ima.py --sync-status            # 定时同步用：无变化输出 {"action":"none"}
 ```
 
 令牌放在 `local.env`（不入库）：
@@ -128,6 +129,12 @@ GitHub Actions 里跑的 Python 脚本拿不到这个凭证，也不该把个人
 『把段永平数据同步到 ima』完成上传」。增量更新用**同名替换**：`段永平雪球动态.md`
 文件名固定，重新生成后覆盖同名条目即可，不会在文件夹里越堆越多；
 历史索引是静态的，只在归档来源变更时才需要重传。
+
+已建 WorkBuddy 自动化「段永平雪球动态同步到 ima」，每 4 小时跑一次：
+`git pull` → `export_ima.py --sync-status` → 有变化才走
+`create_media` / PUT / `add_knowledge(REPLACE)` → `--commit` 记指纹。
+没有新内容时静默跳过，不重复入库；`ima_export/.sync.json` 记录上次同步的指纹。
+也可以在会话里直接说「把段永平数据同步到 ima」手动触发一次。
 
 ## 边界与风险
 

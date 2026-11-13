@@ -12,12 +12,17 @@
 无法直接调它。所以链路是「CI 持续写 archive/ → 本机跑本脚本 → 由 WorkBuddy 上传到 ima」。
 
 用法：
-  python3 export_ima.py
+  python3 export_ima.py                 # 生成两份快照
+  python3 export_ima.py --sync-status  # stdout 只输出一行 JSON，供定时同步判断是否需要上传
+  python3 export_ima.py --commit <fp>  # 上传成功后记录指纹，下次不再重复上传
 """
 
+import argparse
 import datetime as dt
+import hashlib
 import json
 import os
+import sys
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ARCHIVE_JSONL = os.path.join(BASE_DIR, "archive", "items.jsonl")
@@ -28,6 +33,7 @@ OUT_DIR = os.path.join(BASE_DIR, "ima_export")
 CST = dt.timezone(dt.timedelta(hours=8))
 LIVE_MD = "段永平雪球动态.md"
 HISTORY_MD = "段永平雪球发言历史索引.md"
+SYNC_STATE = os.path.join(OUT_DIR, ".sync.json")
 
 
 def now_str():
@@ -156,17 +162,78 @@ def write(name, text):
     return p, os.path.getsize(p)
 
 
+def fingerprint(items):
+    """用 id + 正文长度 + 时间戳做指纹：只有抓到新内容（或正文被补全）才变化。"""
+    payload = json.dumps(
+        [[it.get("id"), len(it.get("text") or ""), it.get("ts")] for it in items],
+        ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def read_sync():
+    try:
+        with open(SYNC_STATE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
 def main():
+    ap = argparse.ArgumentParser(description="生成 ima 知识库快照")
+    ap.add_argument("--sync-status", action="store_true",
+                    help="stdout 只输出一行 JSON：action=upload / none")
+    ap.add_argument("--commit", default=None, metavar="FINGERPRINT",
+                    help="上传成功后写入指纹")
+    args = ap.parse_args()
+
     with open(CONFIG_JSON, encoding="utf-8") as f:
         cfg = json.load(f)
     items = load_items()
+    fp = fingerprint(items)
+
+    if args.commit:
+        os.makedirs(OUT_DIR, exist_ok=True)
+        p = os.path.join(OUT_DIR, LIVE_MD)
+        size = os.path.getsize(p) if os.path.exists(p) else 0
+        tmp = SYNC_STATE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"fingerprint": args.commit, "file_size": size,
+                       "count": len(items),
+                       "synced_at": dt.datetime.now(CST).isoformat(timespec="seconds")},
+                      f, ensure_ascii=False, indent=2)
+        os.replace(tmp, SYNC_STATE)
+        print(f"[ima] 同步状态已记录 fp={args.commit} size={size} count={len(items)}")
+        return 0
+
+    hp = os.path.join(OUT_DIR, HISTORY_MD)
+    lp = os.path.join(OUT_DIR, LIVE_MD)
+
+    if args.sync_status:
+        prev = read_sync()
+        # 没变化时连文件都不重写，避免无谓地改时间戳
+        if (prev.get("fingerprint") == fp and os.path.exists(lp)
+                and os.path.getsize(lp) == prev.get("file_size")):
+            print(json.dumps({"action": "none", "count": len(items)}, ensure_ascii=False))
+            return 0
+        p1, n1 = write(LIVE_MD, build_live(cfg, items))
+        if not os.path.exists(hp):
+            write(HISTORY_MD, build_history())
+        print(json.dumps({"action": "upload", "path": p1, "file_name": LIVE_MD,
+                          "file_size": n1, "count": len(items), "fingerprint": fp},
+                         ensure_ascii=False))
+        return 0
+
     p1, n1 = write(LIVE_MD, build_live(cfg, items))
-    p2, n2 = write(HISTORY_MD, build_history())
+    # 历史索引是静态的，已生成过就不重复写
+    if not os.path.exists(hp):
+        _, n2 = write(HISTORY_MD, build_history())
+    else:
+        n2 = os.path.getsize(hp)
     print(f"[ima] {os.path.basename(p1)}  {n1:,} 字节  ({len(items)} 条动态)")
-    print(f"[ima] {os.path.basename(p2)}  {n2:,} 字节")
+    print(f"[ima] {os.path.basename(hp)}  {n2:,} 字节")
     print(f"[ima] 输出目录：{OUT_DIR}")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
