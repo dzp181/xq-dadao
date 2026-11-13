@@ -8,11 +8,11 @@ on:
         required: false
         default: 'false'
   schedule:
-    # 每 30 分钟；境外 IP 可达性待验证，建议以国内服务器 crontab 为主
+    # 每 30 分钟。2026-11-13 实测境外 Actions IP 可直连别名主页 + api.xueqiu.com。
     - cron: '*/30 * * * *'
 
 permissions:
-  contents: read
+  contents: write          # 需要把 state.json 提交回仓库
 
 concurrency:
   group: xq-dadao
@@ -27,6 +27,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Run
         env:
           XQ_NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
@@ -35,4 +36,20 @@ jobs:
             python3 xq_push.py --dry-run
           else
             python3 xq_push.py
+          fi
+
+      # CI 每轮都是干净环境：state 必须回写，否则新帖会被重复推送。
+      # 没有新动态时脚本不写 state，这里自然无 diff、不产生多余 commit。
+      - name: Persist state
+        if: always()
+        run: |
+          if [ ! -f state.json ]; then exit 0; fi
+          git config user.email "xq-dadao-bot@users.noreply.github.com"
+          git config user.name "xq-dadao bot"
+          git add state.json
+          if git diff --cached --quiet; then
+            echo "state 无变化，跳过提交"
+          else
+            git commit -m "chore(state): update seen ids [skip ci]"
+            git push
           fi

@@ -71,20 +71,30 @@ chmod 600 local.env
 之后按 `max_per_run`（默认 3）增量推送；超过 `max_age_hours`（默认 18）的旧帖跳过。
 推送失败的那条不写进 state，下一轮自动重试，不会漏推。
 
-## 定时
+## 定时（已上线，无需你做任何事）
 
-任选其一，30～60 分钟一轮就够（他发言低频，一天 0～2 条）：
+**默认走 GitHub Actions**：私有仓库 `dzp181/xq-dadao`，`.github/workflows/xq.yml`
+每 30 分钟自动跑一轮（`schedule`），也可手动 `gh workflow run xq.yml -f dry_run=true`。
+2026-11-13 实测境外 Actions IP 能直连别名主页 + `api.xueqiu.com`，
+日志确认「匿名会话已建立（title=大道无形我有型 - 雪球）」。
+secret `NTFY_TOKEN` 已设置，本地 `local.env` 只用于手动跑。
+
+CI 每轮是干净环境，所以 workflow 在推送后把 `state.json` 提交回仓库，
+避免新帖被重复推送；没有新动态时脚本不写 state，也就不会产生多余 commit。
+
+代价：GitHub 对 60 天无活动的仓库会停用 `schedule`。若发现停更，用下面任一方式兜底
+（与 x2ding 同一台服务器，或由服务器 crontab 调 `workflow_dispatch`）：
 
 ```bash
-# 国内服务器 crontab（推荐，与 x2ding 同一台）
+# 国内服务器 crontab（备选）
 */30 * * * * cd /path/to/xq-dadao && ./run.sh >> /tmp/xq-dadao.log 2>&1
 
-# 本机 macOS crontab
+# 本机 macOS crontab（备选）
 */30 * * * * cd /Users/you/xq-dadao && ./run.sh >> /tmp/xq-dadao.log 2>&1
-```
 
-`.github/workflows/xq.yml` 提供 GitHub Actions 版本（`workflow_dispatch` + `schedule`），
-需要 secret `NTFY_TOKEN`。**境外 IP 是否能走通这条链路尚未验证**，优先用国内服务器。
+# 或由服务器敲一下 Actions（与 x2ding 的模式一致）
+gh workflow run xq.yml -R dzp181/xq-dadao
+```
 
 ## 边界与风险
 
