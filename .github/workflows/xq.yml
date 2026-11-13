@@ -51,5 +51,6 @@ jobs:
             echo "state 无变化，跳过提交"
           else
             git commit -m "chore(state): update seen ids [skip ci]"
-            git push
+            # 网页端偶尔会同时改仓库导致非快进，拉一次再推自愈
+            git push || (git pull --rebase origin master && git push)
           fi
