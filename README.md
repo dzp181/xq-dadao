@@ -54,6 +54,10 @@ GET https://api.xueqiu.com/v4/statuses/user_timeline.json
 ./run.sh --test         # 发一条自检消息，验 ntfy 链路
 ./run.sh                # 正常跑一轮
 ./run.sh --max 1        # 覆盖单轮推送上限
+
+python3 xq_push.py --import-raw data/seed_timeline.json --online
+                                               # 从原始抓取快照重建归档（联网补长文全文）
+python3 export_ima.py                          # 生成可导入 ima 的 Markdown 快照
 ```
 
 令牌放在 `local.env`（不入库）：
@@ -95,6 +99,35 @@ CI 每轮是干净环境，所以 workflow 在推送后把 `state.json` 提交�
 # 或由服务器敲一下 Actions（与 x2ding 的模式一致）
 gh workflow run xq.yml -R dzp181/xq-dadao
 ```
+
+## 数据归档与 ima 知识库
+
+除了 ntfy 推送，抓到的**内容全文**会另存一份，供知识库检索与问答。
+
+| 路径 | 内容 |
+| --- | --- |
+| `archive/items.jsonl` | 机器可读全量归档，一行一条（`id/kind/title/text/context/url/ts/来源/互动数`），按 id 去重 |
+| `archive/by-month/YYYY-MM.md` | 按月的人可读版本 |
+| `data/history_index.json` | 709 条历史发言索引精简版（来自 ai-berkshire 公开归档，只有摘要与链接） |
+| `data/seed_timeline.json` | 一次原始 `user_timeline.json` 抓取的精简快照，用于可复现地重建归档 |
+| `ima_export/段永平雪球动态.md` | **实时全量快照**，固定文件名，`export_ima.py` 生成，不入库 |
+| `ima_export/段永平雪球发言历史索引.md` | 历史索引快照，一次入库即可 |
+
+归档与推送是解耦的：`xq_push.py` 抓到时间线后先写归档，再走推送逻辑。
+所以即使某条推送失败、或超过 `max_per_run` 没推，正文仍完整留存。
+归档失败不影响推送，dry-run 不落盘。
+CI 的 `Persist state and archive` 步骤把 `state.json` 与 `archive/` 一起提交回仓库，
+所以每 30 分钟的新内容会自动沉淀在私有仓库里。
+
+**ima 存放位置**：知识库「美股投研小白知识库」→ 文件夹「网红人物帖推送」→「段永平」。
+2026-11-13 已导入两份文档并验证正文可读：实时动态全文（20 条）与历史索引（709 条）。
+
+**为什么不是 CI 直接写 ima**：ima 只能通过 WorkBuddy 的 ima 连接器访问，
+GitHub Actions 里跑的 Python 脚本拿不到这个凭证，也不该把个人知识库令牌放进 CI。
+所以链路是「CI 沉淀 `archive/` → 本机 `python3 export_ima.py` → 在 WorkBuddy 会话里说一句
+『把段永平数据同步到 ima』完成上传」。增量更新用**同名替换**：`段永平雪球动态.md`
+文件名固定，重新生成后覆盖同名条目即可，不会在文件夹里越堆越多；
+历史索引是静态的，只在归档来源变更时才需要重传。
 
 ## 边界与风险
 

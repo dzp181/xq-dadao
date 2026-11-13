@@ -38,19 +38,21 @@ jobs:
             python3 xq_push.py
           fi
 
-      # CI 每轮都是干净环境：state 必须回写，否则新帖会被重复推送。
-      # 没有新动态时脚本不写 state，这里自然无 diff、不产生多余 commit。
-      - name: Persist state
+      # CI 每轮都是干净环境：state 与 archive 都必须回写，
+      # 否则新帖会被重复推送、抓到的正文也会丢。
+      # 没有新动态时两者都不写，这里自然无 diff、不产生多余 commit。
+      - name: Persist state and archive
         if: always()
         run: |
           if [ ! -f state.json ]; then exit 0; fi
           git config user.email "xq-dadao-bot@users.noreply.github.com"
           git config user.name "xq-dadao bot"
           git add state.json
+          if [ -d archive ]; then git add archive; fi
           if git diff --cached --quiet; then
-            echo "state 无变化，跳过提交"
+            echo "state / archive 无变化，跳过提交"
           else
-            git commit -m "chore(state): update seen ids [skip ci]"
+            git commit -m "chore(state+archive): persist incremental data [skip ci]"
             # 网页端偶尔会同时改仓库导致非快进，拉一次再推自愈
             git push || (git pull --rebase origin master && git push)
           fi

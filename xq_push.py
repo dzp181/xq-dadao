@@ -20,6 +20,11 @@
   python3 xq_push.py --dry-run    # 只打印将推送的内容，不推送、不写 state
   python3 xq_push.py --init       # 只把历史底库灌入 state（首次部署用，避免刷屏）
   python3 xq_push.py --test       # 发一条自检消息，验 ntfy 链路
+  python3 xq_push.py --import-raw data/seed_timeline.json --online
+                                # 从原始抓取快照重建归档，联网补长文全文
+
+归档：archive/items.jsonl 是机器可读全量数据，archive/by-month/YYYY-MM.md 是人可读版本。
+export_ima.py 从归档生成可导入 ima 知识库的 Markdown 快照。
 """
 
 import argparse
@@ -39,6 +44,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 STATE_FILE = os.path.join(BASE_DIR, "state.json")
 BASELINE_FILE = os.path.join(BASE_DIR, "baseline_ids.txt")
+ARCHIVE_DIR = os.path.join(BASE_DIR, "archive")
+ARCHIVE_JSONL = os.path.join(ARCHIVE_DIR, "items.jsonl")
+ARCHIVE_MD_DIR = os.path.join(ARCHIVE_DIR, "by-month")
 
 CST = dt.timezone(dt.timedelta(hours=8))
 SITE = "https://xueqiu.com"
@@ -95,6 +103,121 @@ def baseline_ids():
             return [ln.strip() for ln in f if ln.strip().isdigit()]
     except OSError:
         return []
+
+
+# ---------------------------------------------------------------- 数据归档
+# 与「推送」解耦：archive/ 记录的是「抓到了什么」，state.json 只管「推过了什么」。
+# 这样即使某条推送失败、或超过单轮上限没推，内容仍完整留存，可导出到 ima / 其他知识库。
+# 全量重写而非追加：条目量在千级，原子重写更抗 CI 里的半截写入与并发。
+
+def load_archive():
+    items = {}
+    try:
+        with open(ARCHIVE_JSONL, encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    it = json.loads(ln)
+                    if it.get("id"):
+                        items[str(it["id"])] = it
+                except (ValueError, json.JSONDecodeError):
+                    continue
+    except OSError:
+        pass
+    return items
+
+
+def month_md(items):
+    """按月生成人可读的 Markdown，纯文本，方便直接丢进知识库检索。"""
+    buckets = {}
+    for it in items:
+        d = dt.datetime.fromtimestamp(int(it.get("ts") or 0) / 1000, CST)
+        buckets.setdefault(d.strftime("%Y-%m"), []).append(it)
+    out = {}
+    for month, group in buckets.items():
+        lines = [f"# 段永平（大道无形我有型）雪球动态 · {month}", ""]
+        for it in sorted(group, key=lambda x: int(x.get("ts") or 0), reverse=True):
+            lines.append(f"## {cst_line(it['ts'])} · {it['kind']}")
+            if it.get("title"):
+                lines.append(f"**{it['title']}**")
+                lines.append("")
+            lines.append(it.get("text") or "")
+            if it.get("context"):
+                lines += ["", it["context"]]
+            meta = [f"原帖：{it['url']}"]
+            if it.get("source"):
+                meta.append(f"来自 {it['source']}")
+            if it.get("reply_count") or it.get("like_count"):
+                meta.append(f"回复 {it.get('reply_count', 0)} · 赞 {it.get('like_count', 0)}")
+            lines += ["", "> " + " · ".join(meta), ""]
+        out[month] = "\n".join(lines).rstrip() + "\n"
+    return out
+
+
+def archive_write(items):
+    os.makedirs(ARCHIVE_MD_DIR, exist_ok=True)
+    ordered = sorted(items.values(), key=lambda x: int(x.get("ts") or 0))
+    tmp = ARCHIVE_JSONL + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for it in ordered:
+            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+    os.replace(tmp, ARCHIVE_JSONL)
+    for month, text in month_md(ordered).items():
+        p = os.path.join(ARCHIVE_MD_DIR, month + ".md")
+        t = p + ".tmp"
+        with open(t, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(t, p)
+
+
+def archive_statuses(opener, cfg, statuses):
+    """把本轮抓到、尚未归档的条目写进 archive/。返回新增条数。"""
+    items = load_archive()
+    added = 0
+    for s in statuses:
+        sid = str(s.get("id") or "")
+        if not sid or sid in items:
+            continue
+        items[sid] = build_item(opener, cfg, s)
+        added += 1
+    if added:
+        archive_write(items)
+        log(f"归档新增 {added} 条（archive 共 {len(items)} 条）")
+    return added
+
+
+def cmd_import_raw(path, online=False):
+    """从一次原始 user_timeline.json 重建归档，不改 state、不推送、可重复执行。
+
+    默认离线（只用列表里已有的 description）；--online 时先建匿名会话，
+    对截断的长文补 /statuses/show.json 拿全文。同 id 会覆盖，所以可用于「补全旧归档」。
+    """
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    statuses = raw.get("statuses") if isinstance(raw, dict) else raw
+    if not isinstance(statuses, list) or not statuses:
+        log("原始文件里没有 statuses")
+        return 1
+    cfg = load_config()
+    opener = None
+    if online:
+        try:
+            opener = new_opener(cfg)
+            establish_session(opener, cfg)
+        except Exception as e:
+            log(f"联网建会话失败，退回离线导入：{e}")
+            opener = None
+    items = load_archive()
+    for s in statuses:
+        sid = str(s.get("id") or "")
+        if sid:
+            items[sid] = build_item(opener, cfg, s)
+    archive_write(items)
+    log(f"从 {os.path.basename(path)} 重建 {len(statuses)} 条"
+        f"（{'联网补全文' if opener else '离线'}），归档共 {len(items)} 条")
+    return 0
 
 
 # ---------------------------------------------------------------- HTTP 会话
@@ -214,8 +337,9 @@ def build_item(opener, cfg, s):
     sid = str(s["id"])
     text = clean_html(s.get("description") or s.get("text") or "")
 
-    # 列表里的长文只有 ~150 字摘要，补一次详情
-    if s.get("truncated") or s.get("is_column") or text.endswith("..."):
+    # 列表里的长文只有 ~150 字摘要，补一次详情。
+    # opener=None 用于离线冷启动导入，此时只用列表里已有的完整 description。
+    if opener is not None and (s.get("truncated") or s.get("is_column") or text.endswith("...")):
         full = fetch_detail(opener, cfg, sid)
         if len(full) > len(text):
             text = full
@@ -363,6 +487,14 @@ def run(cfg, dry_run=False, max_override=None):
             break
         time.sleep(0.6)
 
+    # 归档与推送解耦：先留全量数据，再走推送逻辑。
+    # 归档失败不影响 ntfy 推送；dry-run 不落盘。
+    if not dry_run:
+        try:
+            archive_statuses(opener, cfg, status_list)
+        except Exception as e:
+            log(f"归档失败（不影响推送）：{e}")
+
     fresh = [s for s in status_list if str(s["id"]) not in seen]
     fresh.sort(key=lambda s: int(s.get("created_at") or 0))  # 老 → 新
 
@@ -427,9 +559,15 @@ def main():
     ap.add_argument("--init", action="store_true", help="只灌历史底库到 state")
     ap.add_argument("--test", action="store_true", help="发一条链路自检消息")
     ap.add_argument("--max", type=int, default=None, help="覆盖单轮推送上限")
+    ap.add_argument("--import-raw", default=None, metavar="FILE",
+                    help="从原始 user_timeline.json 重建归档，不推送")
+    ap.add_argument("--online", action="store_true",
+                    help="配合 --import-raw：联网补长文全文（默认离线）")
     args = ap.parse_args()
 
     cfg = load_config()
+    if args.import_raw:
+        return cmd_import_raw(args.import_raw, online=args.online)
     if args.init:
         cmd_init()
         return 0
